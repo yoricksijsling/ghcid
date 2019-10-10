@@ -24,6 +24,8 @@
 
 (setq ghcid-process-name "ghcid")
 
+(setq ghcid-command-history nil)
+
 
 (define-minor-mode ghcid-mode
   "A minor mode for ghcid terminals
@@ -81,10 +83,6 @@ recognize the new height until you manually restart it by calling
 (defun ghcid-stack-cmd (target)
   (format "stack ghci %s --test --bench --ghci-options=-fno-code" target))
 
-;; TODO Pass in compilation command like compilation-mode
-(defun ghcid-command (h)
-    (format "ghcid -c \"%s\" -h %s\n" (ghcid-stack-cmd ghcid-target) h))
-
 (defun ghcid-get-buffer ()
   "Create or reuse a ghcid buffer with the configured name and
 display it. Return the window that shows the buffer.
@@ -93,7 +91,7 @@ User configuration will influence where the buffer gets shown
 exactly. See `ghcid-mode'."
   (display-buffer (get-buffer-create (ghcid-buffer-name)) '((display-buffer-reuse-window))))
 
-(defun ghcid-start (dir)
+(defun ghcid-start (dir ghci-cmd)
   "Start ghcid in the specified directory"
 
   (with-selected-window (ghcid-get-buffer)
@@ -116,9 +114,16 @@ exactly. See `ghcid-mode'."
            ghcid-process-name
            "/bin/bash"
            nil
-           (list "-c" (ghcid-command height)))
+           (list "-c" (format "ghcid -c \"%s\" -h %s\n" ghci-cmd height)))
 
       )))
+
+(defun ghcid-read-command (command)
+  "Similar to `compilation-read-command'"
+  (read-shell-command "Compile command: " command
+                      (if (equal (car ghcid-command-history) command)
+                          '(ghcid-command-history . 1)
+                        'ghcid-command-history)))
 
 (defun ghcid-kill ()
   (let* ((ghcid-buf (get-buffer (ghcid-buffer-name)))
@@ -130,13 +135,16 @@ exactly. See `ghcid-mode'."
         ))))
 
 ;; TODO Close stuff if it fails
-(defun ghcid ()
+(defun ghcid (ghci-cmd)
   "Start a ghcid process in a new window. Kills any existing sessions.
 
 The process will be started in the directory of the buffer where
 you ran this command from."
-  (interactive)
-  (ghcid-start default-directory))
+  (interactive
+   (let ((command (ghcid-stack-cmd ghcid-target)))
+     (list (ghcid-read-command command))))
+
+  (ghcid-start default-directory ghci-cmd))
 
 ;; Assumes that only one window is open
 (defun ghcid-stop ()
