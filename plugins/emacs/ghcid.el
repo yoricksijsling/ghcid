@@ -18,6 +18,7 @@
 ;;; Code:
 
 (require 'term)
+(require 'compile)
 
 ;; Set ghcid-target to change the stack target
 (setq ghcid-target "")
@@ -35,7 +36,9 @@ will start in the directory of your current buffer.
 
 It is based on `compilation-mode'. That means the errors and
 warnings can be clicked and the `next-error'(\\[next-error]) and
-`previous-error'(\\[previous-error]) commands will work as usual.
+`previous-error'(\\[previous-error]) commands will work as
+usual. Set `compilation-skip-threshold' to navigate through
+locations that are not marked as error or warning.
 
 To configure where the new buffer should appear, customize your
 `display-buffer-alist'. For instance like so:
@@ -58,25 +61,6 @@ recognize the new height until you manually restart it by calling
   (linum-mode -1)
   (compilation-minor-mode))
 
-
-;; Compilation mode does some caching for markers in files, but it gets confused
-;; because ghcid reloads the files in the same process. Here we parse the
-;; 'Reloading...' message from ghcid and flush the cache for the mentioned
-;; files. This approach is very similar to the 'omake' hacks included in
-;; compilation mode.
-(add-to-list
-  'compilation-error-regexp-alist-alist
-  '(ghcid-reloading
-    "Reloading\\.\\.\\.\\(\\(\n  .+\\)*\\)" 1 nil nil nil nil
-    (0 (progn
-         (let* ((filenames (cdr (split-string (match-string 1) "\n  "))))
-           (dolist (filename filenames)
-             (compilation--flush-file-structure filename)))
-         nil))
-    ))
-(add-to-list 'compilation-error-regexp-alist 'ghcid-reloading)
-
-
 (defun ghcid-buffer-name ()
   (concat "*" ghcid-process-name "*"))
 
@@ -91,6 +75,43 @@ User configuration will influence where the buffer gets shown
 exactly. See `ghcid-mode'."
   (display-buffer (get-buffer-create (ghcid-buffer-name)) '((display-buffer-reuse-window))))
 
+
+(setq ghcid-compilation-error-regexp-alist
+      '(
+        ;; Match errors. E.g. `/path/to/Foo.hs:30:56-59: error`
+        ("^\\([[:alnum:]/.-]*\\):\\([0-9]+\\):\\([0-9]+\\)\\(-\\([0-9]+\\)\\)?: ?\\(error\\|\\(warning\\)\\)"
+         1 2 (3 . 5) ;; File 1, line 2, column from 3 to 5
+         (7 . nil)  ;; warning if 7 matches, otherwise error
+         )
+
+        ;; Match errors with block ranges. E.g. `/path/to/Foo.hs:(93,48)-(96,54): error`
+        ("^\\([[:alnum:]/.-]*\\):(\\([0-9]+\\),\\([0-9]+\\))-(\\([0-9]+\\),\\([0-9]+\\)): ?\\(error\\|\\(warning\\)\\)"
+         1 (2 . 4) (3 . 5) ;; File 1, lines from 2 to 4, column from 3 to 5
+         (7 . nil)  ;; warning if 7 matches, otherwise error
+         )
+
+        ;; Match additional mentions. E.g. `(/path/to/Foo.hs:23:1-38)`
+        ("(\\([[:alnum:]/.-]*\\):\\([0-9]+\\):\\([0-9]+\\)\\(-\\([0-9]+\\)\\)?)"
+         1 2 (3 . 5) ;; File 1, line 2, column from 3 to 5
+         0  ;; type is info
+         )
+
+        ;; Compilation mode does some caching for markers in files, but it gets confused
+        ;; because ghcid reloads the files in the same process. Here we parse the
+        ;; 'Reloading...' message from ghcid and flush the cache for the mentioned
+        ;; files. This approach is very similar to the 'omake' hacks included in
+        ;; compilation mode.
+        ("Reloading\\.\\.\\.\\(\\(\n  .+\\)*\\)" 1 nil nil nil nil
+         (0 (progn
+              (let* ((filenames (cdr (split-string (match-string 1) "\n  "))))
+                (dolist (filename filenames)
+                  (compilation--flush-file-structure filename)))
+              nil))
+         )
+
+        ))
+
+
 (defun ghcid-start (dir ghci-cmd)
   "Start ghcid in the specified directory"
 
@@ -99,12 +120,22 @@ exactly. See `ghcid-mode'."
     (setq next-error-last-buffer (current-buffer))
     (setq-local default-directory dir)
 
-    ;; Only now we can figure out the height to pass along to the ghcid process
-    (let ((height (- (window-body-size) 1)))
+    (let (;; Only now we can figure out the height to pass along to the ghcid process
+          (height (- (window-body-size) 1))
+          ;; Tell ghcid that we don't wrap long lines (so it doesn't get confused when calculating
+          ;; the used height)
+          (width 1000)
+          )
 
       (term-mode)
       (term-line-mode)  ;; Allows easy navigation through the buffer
       (ghcid-mode)
+
+      ;; Don't insert newlines when lines are too long, because then we don't recognize error
+      ;; locations properly.
+      (setq-local term-suppress-hard-newline t)
+
+      (setq-local compilation-error-regexp-alist ghcid-compilation-error-regexp-alist)
 
       (setq-local term-buffer-maximum-size height)
       (setq-local scroll-up-aggressively 1)
@@ -114,7 +145,7 @@ exactly. See `ghcid-mode'."
            ghcid-process-name
            "/bin/bash"
            nil
-           (list "-c" (format "ghcid -c \"%s\" -h %s\n" ghci-cmd height)))
+           (list "-c" (format "ghcid -c \"%s\" -w %s -h %s\n" ghci-cmd width height)))
 
       )))
 
